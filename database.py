@@ -1,157 +1,135 @@
 import sqlite3
-from datetime import datetime
+import bcrypt
 
+# Name of the database file
+DATABASE_NAME = "expenses.db"
+
+# Function to connect to the database
 def connect_db():
-    """Create a database connection and return the connection object."""
-    return sqlite3.connect('expenses.db')
+    return sqlite3.connect(DATABASE_NAME)
 
+# Function to create database tables if they don't exist
 def create_tables():
-    """Create the tables needed for the expense tracker."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.executescript('''
-        PRAGMA foreign_keys = OFF;
-        
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        );
+        # Create 'users' table to store user information
+        conn.execute('''CREATE TABLE IF NOT EXISTS users (
+                        id INTEGER PRIMARY KEY,
+                        username TEXT UNIQUE NOT NULL,
+                        password TEXT NOT NULL)''')
+        # Create 'categories' table to store expense categories
+        conn.execute('''CREATE TABLE IF NOT EXISTS categories (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT UNIQUE NOT NULL)''')
+        # Create 'expenses' table to store user expenses
+        conn.execute('''CREATE TABLE IF NOT EXISTS expenses (
+                        id INTEGER PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        category_id INTEGER NOT NULL,
+                        amount REAL NOT NULL,
+                        expense_date TEXT NOT NULL,
+                        description TEXT,
+                        last_modified TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY(user_id) REFERENCES users(id),
+                        FOREIGN KEY(category_id) REFERENCES categories(id))''')
 
-        CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            category_id INTEGER,
-            amount REAL NOT NULL,
-            expense_date DATE NOT NULL,
-            description TEXT,
-            last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (category_id) REFERENCES categories(id)
-        );
-
-        PRAGMA foreign_keys = ON;
-        ''')
-        conn.commit()
-
+# Function to add a new user to the database
 def add_user(username, password):
-    """Add a new user to the users table."""
-    with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, password))
-        conn.commit()
+    hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    try:
+        with connect_db() as conn:
+            conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
+        return True
+    except sqlite3.IntegrityError:
+        return False
 
+# Function to check user credentials during login
 def check_user(username, password):
-    """Check if a user exists and the password is correct."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('SELECT id, username FROM users WHERE username = ? AND password = ?', (username, password))
-        return cur.fetchone()
+        user = conn.execute("SELECT id, password FROM users WHERE username = ?", (username,)).fetchone()
+        if user and bcrypt.checkpw(password.encode(), user[1]):
+            return user[0]
+    return None
 
+# Function to add a new expense category
 def add_category(name):
-    """Add a new category to the categories table."""
-    with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('INSERT INTO categories (name) VALUES (?)', (name,))
-        conn.commit()
+    try:
+        with connect_db() as conn:
+            conn.execute("INSERT INTO categories (name) VALUES (?)", (name,))
+        return True
+    except sqlite3.IntegrityError:
+        return False
 
+# Function to retrieve all expense categories
 def get_categories():
-    """Retrieve all categories from the categories table."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('SELECT id, name FROM categories')
-        return cur.fetchall()
+        return conn.execute("SELECT id, name FROM categories").fetchall()
 
+# Function to add a new expense record
 def add_expense(user_id, category_id, amount, expense_date, description):
-    """Add a new expense to the expenses table."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('''
-        INSERT INTO expenses (user_id, category_id, amount, expense_date, description, last_modified)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (user_id, category_id, amount, expense_date, description))
-        conn.commit()
+        conn.execute('''INSERT INTO expenses (user_id, category_id, amount, expense_date, description)
+                        VALUES (?, ?, ?, ?, ?)''', (user_id, category_id, amount, expense_date, description))
 
+# Function to retrieve all expenses
 def get_expenses():
-    """Retrieve all expenses for the combined report."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('''
-        SELECT e.id, e.amount, e.expense_date, c.name AS category_name, u.username, e.description, e.last_modified
-        FROM expenses e
-        JOIN categories c ON e.category_id = c.id
-        JOIN users u ON e.user_id = u.id
-        ORDER BY e.expense_date DESC
-        ''')
-        return cur.fetchall()
+        return conn.execute('''SELECT e.id, e.expense_date, e.amount, u.username, c.name, e.description, e.last_modified
+                               FROM expenses e
+                               JOIN users u ON e.user_id = u.id
+                               JOIN categories c ON e.category_id = c.id
+                               ORDER BY e.expense_date DESC''').fetchall()
 
-def get_user_expenses(user_id, period=None):
-    """Retrieve expenses for a given user based on a time period."""
-    query = '''
-    SELECT e.id, e.amount, e.expense_date, c.name AS category_name, e.description, e.last_modified
-    FROM expenses e
-    JOIN categories c ON e.category_id = c.id
-    WHERE e.user_id = ?
-    '''
-    params = [user_id]
-
-    if period == 'daily':
-        query += " AND e.expense_date = date('now')"
-    elif period == 'weekly':
-        query += " AND e.expense_date >= date('now', '-7 days')"
-    elif period == 'monthly':
-        query += " AND e.expense_date >= date('now', 'start of month')"
-    elif period == 'yearly':
-        query += " AND e.expense_date >= date('now', 'start of year')"
-
+# Function to retrieve expenses for a specific user and period
+def get_user_expenses(user_id, period):
+    period_sql = {
+        "daily": "AND DATE(expense_date) = DATE('now')",
+        "weekly": "AND DATE(expense_date) >= DATE('now', '-7 days')",
+        "monthly": "AND STRFTIME('%Y-%m', expense_date) = STRFTIME('%Y-%m', 'now')",
+        "yearly": "AND STRFTIME('%Y', expense_date) = STRFTIME('%Y', 'now')",
+        "all": ""
+    }.get(period, "")
+    
+    sql = '''SELECT e.id, e.expense_date, e.amount, u.username, c.name, e.description, e.last_modified
+             FROM expenses e
+             JOIN users u ON e.user_id = u.id
+             JOIN categories c ON e.category_id = c.id
+             WHERE e.user_id = ? {}
+             ORDER BY e.expense_date DESC'''.format(period_sql)
+    
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute(query, params)
-        return cur.fetchall()
+        return conn.execute(sql, (user_id,)).fetchall()
 
+# Function to update an expense record
 def update_expense(expense_id, amount, expense_date, description):
-    """Update an existing expense with new values."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('''
-        UPDATE expenses
-        SET amount = ?, expense_date = ?, description = ?, last_modified = CURRENT_TIMESTAMP
-        WHERE id = ?
-        ''', (amount, expense_date, description, expense_id))
-        conn.commit()
+        conn.execute('''UPDATE expenses
+                        SET amount = ?, expense_date = ?, description = ?, last_modified = CURRENT_TIMESTAMP
+                        WHERE id = ?''', (amount, expense_date, description, expense_id))
 
+# Function to delete an expense record
 def delete_expense(expense_id):
-    """Delete an expense from the expenses table."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('DELETE FROM expenses WHERE id = ?', (expense_id,))
-        conn.commit()
+        conn.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
 
-def update_category(category_id, new_name):
-    """Update the name of an existing category."""
+# Function to update the name of an expense category
+def update_category(category_id, name):
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('UPDATE categories SET name = ? WHERE id = ?', (new_name, category_id))
-        conn.commit()
+        conn.execute("UPDATE categories SET name = ? WHERE id = ?", (name, category_id))
 
-def delete_category(category_id):
-    """Delete a category from the categories table."""
-    with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('DELETE FROM categories WHERE id = ?', (category_id,))
-        conn.commit()
-
+# Function to check if an expense category has associated expenses
 def category_has_expenses(category_id):
-    """Check if a category has linked expenses."""
     with connect_db() as conn:
-        cur = conn.cursor()
-        cur.execute('SELECT COUNT(*) FROM expenses WHERE category_id = ?', (category_id,))
-        return cur.fetchone()[0] > 0
+        count = conn.execute("SELECT COUNT(*) FROM expenses WHERE category_id = ?", (category_id,)).fetchone()[0]
+        return count > 0
 
-if __name__ == '__main__':
+# Function to delete an expense category if it has no associated expenses
+def delete_category(category_id):
+    if not category_has_expenses(category_id):
+        with connect_db() as conn:
+            conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+            return True
+    return False
+
+# If the file is executed directly, create the database tables
+if __name__ == "__main__":
     create_tables()
