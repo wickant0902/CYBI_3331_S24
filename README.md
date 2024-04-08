@@ -27,6 +27,12 @@ Managing My Expenses:
 Users can select an expense to manage, update, or delete it.
 Users can also go back to the previous menu.
 
+Database tables can be viewed using an SQLite viewing extension.
+
+Tools/Languages:
+Python3
+SQLite3
+
 Contributing
 Contributions are welcome! If you find any bugs or have suggestions for improvement, please open an issue or create a pull request.
 
