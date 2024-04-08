@@ -1,4 +1,5 @@
 Expense Tracker
+
 Expense Tracker is a simple command-line application for managing and tracking personal expenses. It allows users to create accounts, log expenses under different categories, view their expenses, and manage expense categories.
 
 Features
